@@ -1,0 +1,176 @@
+heat_template_version: 2021-04-16
+#
+# template for the deployment of ghost cms
+#
+# 2022-08-14 Christian Otto Stelter
+
+description: Ghost instance template
+
+parameters:
+  host_name:
+    type: string
+    label: Hostname
+    description: Name of the host
+    default: "ghost-cms"
+  key_name:
+    type: string
+    label: SSH Keypair Name
+    description: Name of the ssh key used by cloud-init as initial password.
+    constraints:
+      - custom_constraint: nova.keypair
+  public_network:
+    type: string
+    label: External Network
+    description: Name of the public network providing floating ips.
+    default: ext01
+  private_network:
+    type: string
+    label: Private Network
+    description: Name of the private network which shall be used in your project.
+    constraints:
+      - custom_constraint: neutron.network
+  image:
+    type: string
+    label: Image Name
+    description: Name of the OS image used for the installation.
+    default: Ubuntu 22.04
+    constraints:
+      - allowed_values:
+        - Ubuntu 22.04
+        - Ubuntu 20.04
+  flavor:
+    type: string
+    label: Instance Size
+    description: Name of the flavor to be used for this instance.
+    default: SCS-2V:4:20
+    constraints:
+      - allowed_values:
+        - SCS-2V:2:20
+        - SCS-2V:4:20
+        - SCS-2V:4:50
+  sitename:
+    type: string
+    label: Sitename
+    description: Fully qualified domain name of the Ghost CMS site (ghost.builtonopenstack.net)
+    default: ghost.builtonopenstack.net
+  dyndns_token:
+    type: string
+    label: DynDNS Token
+    description: Token for DynDNS service
+    hidden: true
+
+resources:
+  database_password:
+    type: OS::Heat::RandomString
+
+  database_root_password:
+    type: OS::Heat::RandomString
+
+  CMS_is_Ready:
+    type: OS::Heat::WaitCondition
+    properties:
+      handle: { get_resource: CMS_is_Ready_Handle }
+      timeout: 600
+
+  CMS_is_Ready_Handle:
+    type: OS::Heat::WaitConditionHandle
+
+  allow_ghost_ssh_access:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: allow incoming SSH and ICMP traffic from anywhere
+      name: allow_ghost_ssh_access
+      rules:
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 22, port_range_max: 22, protocol: tcp }
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, protocol: icmp }
+
+  allow_ghost_web_access:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: allow incoming web traffic via http/https from anywhere
+      name: allow_ghost_web_access
+      rules:
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 80, port_range_max: 80, protocol: tcp }
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 443, port_range_max: 443, protocol: tcp }
+
+  host:
+    type: OS::Nova::Server
+    properties:
+      name: { get_param: host_name }
+      user_data_format: RAW
+      image: { get_param: image }
+      key_name: { get_param: key_name }
+      flavor: { get_param: flavor }
+      networks:
+        - port: { get_resource: port }
+      user_data:
+          str_replace:
+            template: |
+              #!/usr/bin/bash -v
+              export DEBIAN_FRONTEND=noninteractive
+              wget -4 -q -O - --no-check-certificate "https://dyndns.regfish.de/?fqdn=$sitename&thisipv4=1&forcehost=1&authtype=secure&token=$dyndns_token"
+              apt update && apt upgrade -y
+              groupadd -g 1001 ghostops
+              useradd -g 1001 -u 1001 -c "Ghost CMS User" -m -s /bin/bash ghostops
+              echo "ghostops ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/42-ghostops
+              apt install -y nginx net-tools
+              mkdir -p /var/www/$sitename
+              chown ghostops:ghostops /var/www/$sitename
+              chmod 755 /var/www/$sitename
+              apt-get install mysql-server mysql-client -y
+              curl -sL https://deb.nodesource.com/setup_16.x | bash
+              apt install -y nodejs
+              npm install ghost-cli@latest -g
+              ## sed -i s/127.0.0.1/0.0.0.0/ /etc/mysql/mysql.conf.d/mysqld.cnf
+              ## systemctl restart mysqld.service
+              mysqladmin -u root password $db_rootpassword
+              cat << EOF | mysql -u root --password=$db_rootpassword
+              CREATE DATABASE ghostcms;
+              CREATE USER "ghostops"@"localhost" IDENTIFIED BY "$db_password";
+              GRANT ALL PRIVILEGES ON ghostcms.* TO "ghostops"@"localhost";
+              FLUSH PRIVILEGES;
+              EXIT
+              EOF
+              su -l ghostops -c "cd /var/www/$sitename && ghost install --sslemail cosinus@unit42.de --sslstaging --url https://$sitename/ --db mysql --dbhost 127.0.0.1 --dbuser ghostops --dbpass $db_password --dbname ghostcms --auto"
+              wc_notify --data-binary '{"status": "SUCCESS"}'
+            params:
+              wc_notify: { get_attr: ['CMS_is_Ready_Handle', 'curl_cli'] }
+              $db_password: {get_attr: [database_password, value]}
+              $db_rootpassword: {get_attr: [database_root_password, value]}
+              $sitename: {get_param: sitename}
+              $dyndns_token: {get_param: dyndns_token}
+
+  port:
+    type: OS::Neutron::Port
+    depends_on: [ allow_ghost_ssh_access, allow_ghost_web_access ]
+    properties:
+      network: { get_param: private_network }
+      security_groups: [ get_resource: allow_ghost_ssh_access, get_resource: allow_ghost_web_access ]
+
+  public_server_ip:
+    type: OS::Neutron::FloatingIP
+    depends_on: [ port ]
+    properties:
+      floating_network: { get_param: public_network }
+      port_id: { get_resource: port }
+
+outputs:
+    ghost_admin_url:
+      description: Link to the Ghost Admin Panel
+      value:
+        make_url:
+          scheme: https
+          host: { get_param: sitename }
+          path: /ghost
+
+    ghost_public_url:
+      description: Link to the Ghost Site
+      value:
+        make_url:
+          scheme: https
+          host: { get_param: sitename }
+          path: /
+
+    public_ip_address:
+      description: Public IP address of the server
+      value: { get_attr: [ public_server_ip, floating_ip_address ] }
