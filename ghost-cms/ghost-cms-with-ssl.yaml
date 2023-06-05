@@ -53,6 +53,16 @@ parameters:
     label: Sitename
     description: Fully qualified domain name of the Ghost CMS site (ghost.example.com)
     default: ghost.example.com
+  dyndns_token:
+    type: string
+    label: DynDNS Token
+    description: Token for DynDNS service
+    hidden: true
+  sslemailaddress:
+    type: string
+    label: SSL Notification Address
+    description: E-Mail address for getting notification from Let's Encrypt
+    hidden: false
 
 resources:
   database_password:
@@ -103,33 +113,33 @@ resources:
             template: |
               #!/usr/bin/bash -v
               export DEBIAN_FRONTEND=noninteractive
-              apt-get update && apt-get upgrade -y
-              groupadd -g 1001 ghostops
-              useradd -g 1001 -u 1001 -c "Ghost CMS User" -m -s /bin/bash ghostops
-              echo "ghostops ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/42-ghostops
-              apt-get install -y nginx net-tools
+              wget -4 -q -O - --no-check-certificate "https://dyndns.regfish.de/?fqdn=$sitename&thisipv4=1&forcehost=1&authtype=secure&token=$dyndns_token"
+              apt update && apt upgrade -y
+              apt install -y nginx net-tools
               mkdir -p /var/www/$sitename
-              chown ghostops:ghostops /var/www/$sitename
+              chown ubuntu: /var/www/$sitename
               chmod 755 /var/www/$sitename
               apt-get install mysql-server mysql-client -y
               curl -sL https://deb.nodesource.com/setup_16.x | bash
-              apt-get install -y nodejs
+              apt install -y nodejs
               npm install ghost-cli@latest -g
               mysqladmin -u root password $db_rootpassword
               cat << EOF | mysql -u root --password=$db_rootpassword
               CREATE DATABASE ghostcms;
-              CREATE USER "ghostops"@"localhost" IDENTIFIED BY "$db_password";
-              GRANT ALL PRIVILEGES ON ghostcms.* TO "ghostops"@"localhost";
+              CREATE USER "ubuntu"@"localhost" IDENTIFIED BY "$db_password";
+              GRANT ALL PRIVILEGES ON ghostcms.* TO "ubuntu"@"localhost";
               FLUSH PRIVILEGES;
               EXIT
               EOF
-              su -l ghostops -c "cd /var/www/$sitename && ghost install --url http://$sitename/ --db mysql --dbhost 127.0.0.1 --dbuser ghostops --dbpass $db_password --dbname ghostcms --auto"
+              su -l ubuntu -c "cd /var/www/$sitename && ghost install --sslemail $sslemail --sslstaging --url https://$sitename/ --db mysql --dbhost 127.0.0.1 --dbuser ubuntu --dbpass $db_password --dbname ghostcms --auto"
               wc_notify --data-binary '{"status": "SUCCESS"}'
             params:
               wc_notify: { get_attr: ['CMS_is_Ready_Handle', 'curl_cli'] }
               $db_password: {get_attr: [database_password, value]}
               $db_rootpassword: {get_attr: [database_root_password, value]}
               $sitename: {get_param: sitename}
+              $dyndns_token: {get_param: dyndns_token}
+              $sslemail: {get_param: sslemailaddress}
 
   port:
     type: OS::Neutron::Port
@@ -150,7 +160,7 @@ outputs:
       description: Link to the Ghost Admin Panel
       value:
         make_url:
-          scheme: http
+          scheme: https
           host: { get_param: sitename }
           path: /ghost
 
@@ -158,7 +168,7 @@ outputs:
       description: Link to the Ghost Site
       value:
         make_url:
-          scheme: http
+          scheme: https
           host: { get_param: sitename }
           path: /
 

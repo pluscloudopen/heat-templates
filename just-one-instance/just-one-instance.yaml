@@ -1,0 +1,93 @@
+heat_template_version: 2021-04-16
+#
+# template for the deployment of a single instance
+#
+# 2023-06-04 Christian Otto Stelter <christian.stelter@plusserver.com>
+
+description: Simple instance template
+
+parameters:
+  host_name:
+    type: string
+    label: Hostname
+    description: Name of the host
+    default: "number-one"
+  key_name:
+    type: string
+    label: SSH Keypair Name
+    description: Name of the ssh key used by cloud-init as initial password.
+    constraints:
+      - custom_constraint: nova.keypair
+  public_network:
+    type: string
+    label: External Network
+    description: Name of the public network providing floating ips.
+    default: ext01
+  private_network:
+    type: string
+    label: Private Network
+    description: Name of the private network which shall be used in your project.
+    constraints:
+      - custom_constraint: neutron.network
+  image:
+    type: string
+    label: Image Name
+    description: Name of the OS image used for the installation.
+    default: Ubuntu 22.04
+    constraints:
+      - allowed_values:
+        - Ubuntu 22.04
+        - Ubuntu 20.04
+        - Debian 10
+        - Debian 11
+
+  flavor:
+    type: string
+    label: Instance Size
+    description: Name of the flavor to be used for this instance.
+    default: SCS-2V:4:20
+    constraints:
+      - allowed_values:
+        - SCS-2V:2:20
+        - SCS-2V:4:20
+        - SCS-2V:4:50
+
+resources:
+  allow_simple_ssh_access:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: allow incoming SSH and ICMP traffic from anywhere
+      name: allow_simple_ssh_access
+      rules:
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 22, port_range_max: 22, protocol: tcp }
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, protocol: icmp }
+
+  host:
+    type: OS::Nova::Server
+    properties:
+      name: { get_param: host_name }
+      user_data_format: RAW
+      image: { get_param: image }
+      key_name: { get_param: key_name }
+      flavor: { get_param: flavor }
+      networks:
+        - port: { get_resource: port }
+
+  port:
+    type: OS::Neutron::Port
+    depends_on: [ allow_simple_ssh_access ]
+    properties:
+      network: { get_param: private_network }
+      security_groups: [ get_resource: allow_simple_ssh_access ]
+
+  public_server_ip:
+    type: OS::Neutron::FloatingIP
+    depends_on: [ port ]
+    properties:
+      floating_network: { get_param: public_network }
+      port_id: { get_resource: port }
+
+outputs:
+  public_ip_address:
+    description: Public IP address of the server
+    value: { get_attr: [ public_server_ip, floating_ip_address ] }
