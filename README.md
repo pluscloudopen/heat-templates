@@ -17,3 +17,4 @@ They don't claim to be perfect, but they are intended to serve as a good startin
 * [Template Guide](https://docs.openstack.org/heat/latest/template_guide/index.html)
 * [Offical OpenStack Heat Documentation](https://docs.openstack.org/heat/latest/)
 * [OpenStack Resource Types](https://docs.openstack.org/heat/latest/template_guide/openstack.html)
+
