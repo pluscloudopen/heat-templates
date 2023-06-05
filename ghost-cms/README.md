@@ -50,7 +50,7 @@ This template uses the dynamic dns service of [regfish.de](http://regfish.de/) w
 - [Duck DNS](https://www.duckdns.org/)
 - and many more
 
-In addition to the first template it updated/creates an DNS record for your sitename. Upon that record Ghost can automatically create a valid ssl certificate.
+In addition to the first template it updates/creates an DNS record for your sitename. With a dns record Ghost can automatically create a valid ssl certificate.
 
 Nothing else to do, you're ready to fire your first blog entry.
 
