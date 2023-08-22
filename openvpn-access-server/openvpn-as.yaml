@@ -1,0 +1,127 @@
+heat_template_version: 2021-04-16
+#
+# template for the deployment of an OpenVPN Access Server
+#
+# 2022-08-14 Christian Otto Stelter
+
+description: OpenVPN Access Server instance template
+
+parameters:
+  key_name:
+    label: SSH Keypair Name
+    type: string
+    description: Name of the ssh key used by cloud-init.
+    constraints:
+      - custom_constraint: nova.keypair
+  public_network:
+    label: External Network
+    description: Name of the public network providing floating ips.
+    type: string
+    default: ext01
+  private_network:
+    label: Private Network
+    description: Name of the private network which shall be used in your project.
+    type: string
+    constraints:
+      - custom_constraint: neutron.network
+  image:
+    type: string
+    label: Image Name
+    description: Name of the OS image used for the installation.
+    default: Ubuntu 22.04
+    constraints:
+      - allowed_values:
+        - Ubuntu 22.04
+        - Ubuntu 20.04
+  flavor:
+    label: Instance Size
+    description: Name of the flavor to be used for this instance.
+    type: string
+    default: SCS-2V:4:20
+    constraints:
+      - allowed_values:
+        - SCS-1V:1:20
+        - SCS-2V:2:20
+        - SCS-2V:4:20
+
+resources:
+  allow_ssh_access:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: allow incoming SSH and ICMP traffic from anywhere
+      name: allow_ssh_and_icmp
+      rules:
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 22, port_range_max: 22, protocol: tcp }
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, protocol: icmp }
+
+  allow_web_access:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: allow incoming web traffic via http/https from anywhere
+      name: allow_web
+      rules:
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 80, port_range_max: 80, protocol: tcp }
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 443, port_range_max: 443, protocol: tcp }
+
+  allow_vpn_access:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: allow incoming vpn traffic from anywhere
+      name: allow_vpn
+      rules:
+        - { direction: ingress, remote_ip_prefix: 0.0.0.0/0, port_range_min: 1194, port_range_max: 1194, protocol: udp }
+
+  host:
+    type: OS::Nova::Server
+    properties:
+      name: openvpn-access-server
+      user_data_format: RAW
+      user_data: { get_resource: cloud-init-config }
+      image: { get_param: image }
+      key_name: { get_param: key_name }
+      flavor: { get_param: flavor }
+      networks:
+        - port: { get_resource: port }
+
+  cloud-init-config:
+   # cloud init resource
+   type: OS::Heat::CloudConfig
+   properties:
+      cloud_config:
+        package_update: true
+        package_upgrade: true
+        package_reboot_if_required: true
+        write_files:
+          - content: |
+              #!/usr/bin/env bash
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y ca-certificates wget net-tools gnupg
+              wget -qO - https://as-repository.openvpn.net/as-repo-public.gpg | apt-key add -
+              echo "deb http://as-repository.openvpn.net/as/debian $(lsb_release -cs) main">/etc/apt/sources.list.d/openvpn-as-repo.list
+              apt-get update
+              apt-get -y install openvpn-as | tee -a /var/log/openvpn-as-install.log
+              which tee
+            path: /root/openvpn-as-install.sh
+            permissions: 0755
+        runcmd:
+            - /root/openvpn-as-install.sh
+
+  port:
+    type: OS::Neutron::Port
+    depends_on: [ allow_ssh_access, allow_web_access, allow_vpn_access ]
+    properties:
+      network: { get_param: private_network }
+      security_groups: [ get_resource: allow_ssh_access, get_resource: allow_web_access, get_resource: allow_vpn_access ]
+
+  public_server_ip:
+    type: OS::Neutron::FloatingIP
+    depends_on: [ port ]
+    properties:
+      floating_network: { get_param: public_network }
+      port_id: { get_resource: port }
+
+outputs:
+    public_ip_address:
+      description: Public IP address of the server
+      value: { get_attr: [ public_server_ip, floating_ip_address ] }
