@@ -8,6 +8,7 @@ description: OpenVPN Access Server instance template
 
 parameters:
   key_name:
+    label: SSH Keypair Name
     type: string
     description: Name of the ssh key used by cloud-init.
     constraints:
